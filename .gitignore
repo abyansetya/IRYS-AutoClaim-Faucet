@@ -18,5 +18,7 @@ npm-debug.log*
 yarn-debug.log*
 pnpm-debug.log*
 lerna-debug.log*
-pk.txt
-config/pk.txt
+wallet.txt
+config/wallets.txt
+proxies.txt
+config/proxies.txt
