@@ -1,86 +1,99 @@
-import TwoCaptcha from "@2captcha/captcha-solver";
+import axios from "axios";
+import { logger } from "./logger.js"; // Assuming logger.js is in the same directory
 
-let solver = null;
 let lastCaptchaId = null;
-let pollingInterval = 10;
-
-function initializeSolver(apiKey, options = {}) {
-  if (!apiKey) {
-    throw new Error("2Captcha API key is required");
-  }
-
-  solver = new TwoCaptcha.Solver(apiKey);
-  pollingInterval = options.pollingInterval || 10;
-}
 
 /**
- * Solves Cloudflare Turnstile CAPTCHA
- * @param {string} siteKey - The Turnstile sitekey (data-sitekey).
- * @param {string} pageUrl - The full URL of the page where the CAPTCHA is found.
- * @returns {Promise<string>} - The token to submit to Cloudflare.
+ * Memproses Turnstile CAPTCHA secara manual via 2Captcha.
+ * @param {string} apiKey - API key dari 2Captcha.
+ * @param {string} siteKey - Turnstile sitekey (data-sitekey).
+ * @param {string} pageUrl - URL halaman tempat captcha berada.
+ * @returns {Promise<string>} - Token captcha yang berhasil diselesaikan.
  */
-async function solveTurnstile(siteKey, pageUrl) {
-  if (!solver) {
-    throw new Error("Solver is not initialized. Call initializeSolver first.");
-  }
-
+export async function solveTurnstileCaptchaManually(apiKey, siteKey, pageUrl) {
   try {
-    console.log("Solving Turnstile captcha with 2Captcha...");
+    logger.processing("Mengirim permintaan solving captcha ke 2Captcha...");
+    const { data: json } = await axios.get(
+      `https://2captcha.com/in.php?method=turnstile&key=${apiKey}&sitekey=${siteKey}&pageurl=${pageUrl}&json=1`
+    );
 
-    const result = await solver.turnstile({
-      sitekey: siteKey,
-      url: pageUrl,
-    });
-
-    if (!result || !result.data) {
-      throw new Error("Failed to solve Turnstile captcha with 2Captcha");
+    if (json.status !== 1) {
+      throw new Error("Gagal mengirim captcha ke 2Captcha: " + json.request);
     }
 
-    lastCaptchaId = result.id;
+    const requestId = json.request;
+    lastCaptchaId = requestId;
+    logger.success("ID captcha berhasil diperoleh: " + requestId);
 
-    console.log(`2Captcha solved Turnstile token: ${result.data}`);
-    return result.data;
+    let token = null;
+    let attempts = 0;
+    const maxAttempts = 10;
+
+    while (attempts < maxAttempts && !token) {
+      await new Promise((res) => setTimeout(res, 8000)); // tunggu 5 detik
+      attempts++;
+
+      const { data: pollJson } = await axios.get(
+        `https://2captcha.com/res.php?key=${apiKey}&action=get&id=${requestId}&json=1`
+      );
+
+      logger.processing(`Polling #${attempts}: ${JSON.stringify(pollJson)}`);
+
+      if (pollJson.status === 1) {
+        token = pollJson.request;
+        logger.success("✅ Token captcha berhasil");
+      } else {
+        logger.processing("⏳ Token belum siap, mencoba lagi...");
+      }
+    }
+
+    if (!token) {
+      throw new Error(
+        "❌ Gagal memperoleh token captcha setelah beberapa kali percobaan."
+      );
+    }
+
+    return token;
   } catch (error) {
-    console.log(`Turnstile solving error: ${error.message}`);
+    logger.error("⚠️ Error saat solve captcha: " + error.message);
     throw error;
   }
 }
 
-async function reportGoodCaptcha() {
-  if (!solver) return;
+/**
+ * Menandai token captcha terakhir sebagai benar.
+ */
+export async function reportGoodCaptcha(apiKey) {
+  if (!lastCaptchaId) return;
   try {
-    if (!lastCaptchaId) {
-      console.log("No captcha ID available for reporting");
-      return;
-    }
-
-    await solver.goodReport(lastCaptchaId);
-    console.log(`Reported correct solution for captcha ${lastCaptchaId}`);
+    await axios.get(
+      `https://2captcha.com/res.php?key=${apiKey}&action=reportgood&id=${lastCaptchaId}`
+    );
+    logger.success("👍 Berhasil melaporkan captcha sebagai benar.");
     lastCaptchaId = null;
   } catch (error) {
-    console.log(`Error reporting correct solution: ${error.message}`);
+    logger.error("❌ Gagal report good: " + error.message);
   }
 }
 
-async function reportBadCaptcha() {
-  if (!solver) return;
+/**
+ * Menandai token captcha terakhir sebagai salah.
+ */
+export async function reportBadCaptcha(apiKey) {
+  if (!lastCaptchaId) return;
   try {
-    if (!lastCaptchaId) {
-      console.log("No captcha ID available for reporting");
-      return;
-    }
-
-    await solver.badReport(lastCaptchaId);
-    console.log(`Reported incorrect solution for captcha ${lastCaptchaId}`);
+    await axios.get(
+      `https://2captcha.com/res.php?key=${apiKey}&action=reportbad&id=${lastCaptchaId}`
+    );
+    logger.success("👎 Berhasil melaporkan captcha sebagai salah.");
     lastCaptchaId = null;
   } catch (error) {
-    console.log(`Error reporting incorrect solution: ${error.message}`);
+    logger.error("❌ Gagal report bad: " + error.message);
   }
 }
 
-export {
-  initializeSolver,
-  solveTurnstile,
+export default {
+  solveTurnstileCaptchaManually,
   reportGoodCaptcha,
   reportBadCaptcha,
 };
